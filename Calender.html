@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Mini Calendar</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --accent: #2563eb;
+      --bg: #f8fafc;
+      --text: #0f172a;
+      --muted: #64748b;
+      --border: #e2e8f0;
+    }
+    body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; }
+    .app { max-width: 1000px; margin: 24px auto; padding: 16px; }
+    .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .nav { display: flex; gap: 8px; }
+    button { border: 1px solid var(--border); background: white; padding: 8px 12px; border-radius: 8px; cursor: pointer; }
+    button.primary { background: var(--accent); color: white; border-color: var(--accent); }
+    .grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+    .weekday { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 12px; text-align: center; }
+    .cell { background: white; border: 1px solid var(--border); border-radius: 8px; min-height: 90px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+    .daynum { font-weight: 600; }
+    .muted { color: var(--muted); }
+    .today { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .events { display: flex; flex-direction: column; gap: 4px; }
+    .pill { font-size: 12px; padding: 4px 6px; border-radius: 999px; background: #eef2ff; color: #1e40af; border: 1px dashed #93c5fd; }
+    .sidebar { margin-top: 16px; background: white; border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.2); display: none; align-items: center; justify-content: center; }
+    .modal { background: white; width: 360px; max-width: 90vw; border-radius: 10px; padding: 16px; border: 1px solid var(--border); }
+    .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+    input, textarea { padding: 8px; border: 1px solid var(--border); border-radius: 8px; }
+    .row { display: flex; gap: 8px; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="header">
+      <div class="row">
+        <h2 id="monthLabel"></h2>
+      </div>
+      <div class="nav">
+        <button id="prevBtn">Prev</button>
+        <button id="todayBtn">Today</button>
+        <button id="nextBtn">Next</button>
+        <button id="addEventGlobal" class="primary">Add event</button>
+      </div>
+    </div>
+
+    <div class="grid" id="weekdayRow"></div>
+    <div class="grid" id="calendarGrid"></div>
+
+    <div class="sidebar" id="selectedPane">
+      <h3 id="selectedLabel">Selected date</h3>
+      <div id="selectedEvents"></div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="modalBackdrop">
+    <div class="modal">
+      <h3 id="modalTitle">Add event</h3>
+      <form id="eventForm">
+        <div class="field">
+          <label>Date</label>
+          <input type="date" id="dateInput" required />
+        </div>
+        <div class="field">
+          <label>Title</label>
+          <input type="text" id="titleInput" placeholder="e.g., Team meeting" required />
+        </div>
+        <div class="field">
+          <label>Notes</label>
+          <textarea id="notesInput" rows="3" placeholder="Optional"></textarea>
+        </div>
+        <div class="field">
+          <label>Reminder (optional)</label>
+          <input type="datetime-local" id="remindInput" />
+        </div>
+        <div class="row">
+          <button type="submit" class="primary">Save</button>
+          <button type="button" id="cancelBtn">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    // Utilities
+    const pad = n => String(n).padStart(2, '0');
+    const iso = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+    const parseISO = s => { const [y,m,day] = s.split('-').map(Number); return new Date(y, m-1, day); };
+    const storageKey = 'calendarEvents';
+
+    const weekdays = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
+    // State
+    let current = new Date();
+    let selectedDateISO = iso(new Date());
+    let events = loadEvents();
+
+    // Init
+    renderWeekdays();
+    renderMonth(current);
+    selectDate(selectedDateISO);
+    initReminders();
+    bindNav();
+    bindModal();
+
+    function loadEvents() {
+      try {
+        const raw = localStorage.getItem(storageKey);
+        return raw ? JSON.parse(raw) : [];
+      } catch {
+        return [];
+      }
+    }
+    function saveEvents() {
+      localStorage.setItem(storageKey, JSON.stringify(events));
+    }
+
+    // Rendering
+    function renderWeekdays() {
+      const row = document.getElementById('weekdayRow');
+      row.innerHTML = '';
+      weekdays.forEach(w => {
+        const div = document.createElement('div');
+        div.className = 'weekday';
+        div.textContent = w;
+        row.appendChild(div);
+      });
+    }
+
+    function renderMonth(date) {
+      const grid = document.getElementById('calendarGrid');
+      grid.innerHTML = '';
+
+      const y = date.getFullYear();
+      const m = date.getMonth();
+
+      document.getElementById('monthLabel').textContent = `${monthNames[m]} ${y}`;
+
+      const firstOfMonth = new Date(y, m, 1);
+      const startDay = firstOfMonth.getDay();
+      const daysInMonth = new Date(y, m+1, 0).getDate();
+
+      const prevDays = new Date(y, m, 0).getDate();
+      const todayISO = iso(new Date());
+
+      // Fill 6 rows x 7 columns (42 cells)
+      const totalCells = 42;
+      for (let i = 0; i < totalCells; i++) {
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+
+        let cellDate;
+        // Leading days from previous month
+        if (i < startDay) {
+          const d = prevDays - (startDay - 1 - i);
+          cellDate = new Date(y, m-1, d);
+          cell.classList.add('muted');
+        }
+        // Current month days
+        else if (i < startDay + daysInMonth) {
+          const d = i - startDay + 1;
+          cellDate = new Date(y, m, d);
+        }
+        // Trailing days from next month
+        else {
+          const d = i - (startDay + daysInMonth) + 1;
+          cellDate = new Date(y, m+1, d);
+          cell.classList.add('muted');
+        }
+
+        const cellISO = iso(cellDate);
+        const daynum = document.createElement('div');
+        daynum.className = 'daynum';
+        daynum.textContent = cellDate.getDate();
+
+        if (cellISO === todayISO) cell.classList.add('today');
+
+        cell.appendChild(daynum);
+
+        const evts = events.filter(e => e.date === cellISO);
+        if (evts.length) {
+          const list = document.createElement('div');
+          list.className = 'events';
+          evts.slice(0,3).forEach(e => {
+            const pill = document.createElement('div');
+            pill.className = 'pill';
+            pill.textContent = e.title;
+            list.appendChild(pill);
+          });
+          if (evts.length > 3) {
+            const more = document.createElement('div');
+            more.className = 'pill';
+            more.textContent = `+${evts.length-3} more`;
+            list.appendChild(more);
+          }
+          cell.appendChild(list);
+        }
+
+        cell.addEventListener('click', () => selectDate(cellISO));
+        grid.appendChild(cell);
+      }
+    }
+
+    function selectDate(dateISO) {
+      selectedDateISO = dateISO;
+      document.getElementById('selectedLabel').textContent = `Selected: ${dateISO}`;
+      const container = document.getElementById('selectedEvents');
+      const evts = events.filter(e => e.date === dateISO).sort((a,b) => (a.remindAt||0) - (b.remindAt||0));
+      container.innerHTML = '';
+
+      const addBtn = document.createElement('button');
+      addBtn.className = 'primary';
+      addBtn.textContent = 'Add event';
+      addBtn.addEventListener('click', () => openModal(dateISO));
+      container.appendChild(addBtn);
+
+      if (!evts.length) {
+        const p = document.createElement('p');
+        p.className = 'muted';
+        p.textContent = 'No events yet.';
+        container.appendChild(p);
+        return;
+      }
+
+      evts.forEach(e => {
+        const card = document.createElement('div');
+        card.style.border = '1px solid var(--border)';
+        card.style.borderRadius = '8px';
+        card.style.padding = '8px';
+        card.style.marginTop = '8px';
+
+        const title = document.createElement('div');
+        title.style.fontWeight = '600';
+        title.textContent = e.title;
+
+        const meta = document.createElement('div');
+        meta.className = 'muted';
+        const remindStr = e.remindAt ? new Date(e.remindAt).toLocaleString() : 'None';
+        meta.textContent = `Reminder: ${remindStr}`;
+
+        const notes = document.createElement('div');
+        notes.textContent = e.notes || '';
+
+        const row = document.createElement('div');
+        row.className = 'row';
+        const editBtn = document.createElement('button');
+        editBtn.textContent = 'Edit';
+        editBtn.addEventListener('click', () => openModal(e.date, e.id));
+        const delBtn = document.createElement('button');
+        delBtn.textContent = 'Delete';
+        delBtn.addEventListener('click', () => { events = events.filter(x => x.id !== e.id); saveEvents(); renderMonth(current); selectDate(selectedDateISO); });
+
+        row.appendChild(editBtn);
+        row.appendChild(delBtn);
+
+        card.appendChild(title);
+        card.appendChild(meta);
+        if (e.notes) card.appendChild(notes);
+        card.appendChild(row);
+        container.appendChild(card);
+      });
+    }
+
+    // Navigation
+    function bindNav() {
+      document.getElementById('prevBtn').addEventListener('click', () => { current = new Date(current.getFullYear(), current.getMonth()-1, 1); renderMonth(current); });
+      document.getElementById('nextBtn').addEventListener('click', () => { current = new Date(current.getFullYear(), current.getMonth()+1, 1); renderMonth(current); });
+      document.getElementById('todayBtn').addEventListener('click', () => { current = new Date(); renderMonth(current); selectDate(iso(new Date())); });
+      document.getElementById('addEventGlobal').addEventListener('click', () => openModal(iso(new Date())));
+    }
+
+    // Modal & form
+    function bindModal() {
+      const backdrop = document.getElementById('modalBackdrop');
+      const cancelBtn = document.getElementById('cancelBtn');
+      cancelBtn.addEventListener('click', closeModal);
+      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) closeModal(); });
+
+      document.getElementById('eventForm').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const dateStr = document.getElementById('dateInput').value;
+        const title = document.getElementById('titleInput').value.trim();
+        const notes = document.getElementById('notesInput').value.trim();
+        const remindInput = document.getElementById('remindInput').value;
+
+        const remindAt = remindInput ? new Date(remindInput).getTime() : undefined;
+        const editingId = document.getElementById('eventForm').dataset.editId;
+
+        if (!title) return;
+
+        if (editingId) {
+          events = events.map(ev => ev.id === editingId ? { ...ev, date: dateStr, title, notes, remindAt } : ev);
+        } else {
+          const id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random());
+          events.push({ id, date: dateStr, title, notes, remindAt });
+        }
+        saveEvents();
+        closeModal();
+        current = parseISO(dateStr);
+        renderMonth(current);
+        selectDate(dateStr);
+        initReminders(); // reinitialize schedule
+      });
+    }
+
+    function openModal(dateISO, editId) {
+      const backdrop = document.getElementById('modalBackdrop');
+      backdrop.style.display = 'flex';
+      document.getElementById('modalTitle').textContent = editId ? 'Edit event' : 'Add event';
+      document.getElementById('eventForm').dataset.editId = editId || '';
+      document.getElementById('dateInput').value = dateISO;
+      if (editId) {
+        const ev = events.find(e => e.id === editId);
+        document.getElementById('titleInput').value = ev.title || '';
+        document.getElementById('notesInput').value = ev.notes || '';
+        document.getElementById('remindInput').value = ev.remindAt ? new Date(ev.remindAt).toISOString().slice(0,16) : '';
+      } else {
+        document.getElementById('titleInput').value = '';
+        document.getElementById('notesInput').value = '';
+        document.getElementById('remindInput').value = '';
+      }
+    }
+    function closeModal() {
+      document.getElementById('modalBackdrop').style.display = 'none';
+    }
+
+    // Reminders (basic local scheduler)
+    let reminderTimers = [];
+    function initReminders() {
+      // clear old timers
+      reminderTimers.forEach(t => clearTimeout(t));
+      reminderTimers = [];
+
+      const now = Date.now();
+      events.forEach(e => {
+        if (!e.remindAt) return;
+        const delay = e.remindAt - now;
+        if (delay > 0) {
+          const t = setTimeout(() => {
+            alert(`Reminder: ${e.title}\n${e.notes || ''}`);
+          }, delay);
+          reminderTimers.push(t);
+        }
+      });
+    }
+  </script>
+</body>
+</html>
